@@ -37,15 +37,35 @@ type BPMCalibrationData struct {
 	md uint16
 }
 
+type BPMPolynomials struct {
+	c3 float64
+	c4 float64
+	b1 float64
+	c5 float64
+	c6 float64
+	mc float64
+	md float64
+	x0 float64
+	x1 float64
+	x2 float64
+	y0 float64
+	y1 float64
+	y2 float64
+	p0 float64
+	p1 float64
+	p2 float64
+}
+
 type BMP180Driver struct {
 	name          string
 	connection    I2c
 	interval      time.Duration
 	Calibration 	BPMCalibrationData
+	Polynomials		BPMPolynomials
 	RawPressure 	uint16
 	RawTemperature uint16
 	Pressure   		float64
-	Temperature   uint16
+	Temperature   float64
 	Altitude			uint16
 	gobot.Eventer
 }
@@ -127,6 +147,23 @@ func (h *BMP180Driver) initialize() (err error) {
 	binary.Read(buf, binary.BigEndian, &h.Calibration.mc)
 	binary.Read(buf, binary.BigEndian, &h.Calibration.md)
 
+	h.Polynomials.c3 = 160.0 * math.Pow(2,-15.0) * float64(h.Calibration.ac3)
+	h.Polynomials.c4 = math.Pow(10, -3) * math.Pow(2,-15) * float64(h.Calibration.ac4)
+	h.Polynomials.b1 = math.Pow(160, 2) * math.Pow(2, -30) * float64(h.Calibration.b1)
+	h.Polynomials.c5 = (math.Pow(2, -15) / 160) * float64(h.Calibration.ac5)
+	h.Polynomials.c6 = float64(h.Calibration.ac6)
+	h.Polynomials.mc = (math.Pow(2, 11) / math.Pow(160, 2)) * float64(h.Calibration.mc)
+	h.Polynomials.md = float64(h.Calibration.md) / 160.0
+	h.Polynomials.x0 = float64(h.Calibration.ac1)
+	h.Polynomials.x1 = 160.0 * math.Pow(2, -13) * float64(h.Calibration.ac2)
+	h.Polynomials.x2 = math.Pow(160, 2) * math.Pow(2, -25) * float64(h.Calibration.b2)
+	h.Polynomials.y0 = h.Polynomials.c4 * math.Pow(2, 15)
+	h.Polynomials.y1 = h.Polynomials.c4 * h.Polynomials.c3
+	h.Polynomials.y2 = h.Polynomials.c4 * h.Polynomials.b1
+	h.Polynomials.p0 = (3791.0 - 8.0) / 1600.0
+	h.Polynomials.p1 = 1.0 - 7357.0 * math.Pow(2, -20)
+	h.Polynomials.p2 = 3038.0 * 100.0 * math.Pow(2, -36)
+
 	return nil
 }
 
@@ -177,42 +214,19 @@ func (h *BMP180Driver) readRawPressure(mode uint8) (err error, pressure uint16) 
   return nil, h.RawPressure
 }
 
-func (h *BMP180Driver) calculateTemperature() uint16 {
-  x1 := ((h.RawTemperature - h.Calibration.ac6) * h.Calibration.ac5) >> 15;
-  x2 := (h.Calibration.mc << 11) / (x1 + h.Calibration.md)
-  b5 := x1 + x2
-  h.Temperature = ((b5 + 8) >> 4) / 10.0
-
-  return b5
+func (h *BMP180Driver) calculateTemperature() float64 {
+	a := h.Polynomials.c5 * (float64(h.RawTemperature) - h.Polynomials.c6)
+	h.Temperature = a + (h.Polynomials.mc / (a + h.Polynomials.md))
+	return h.Temperature
 }
 
-func (h *BMP180Driver) calculatePressure(mode uint16, b5 uint16) {
-	var p float64
-	b6 := b5 - 4000
-	x1 := (h.Calibration.b2 * (b6 * b6) >> 12) >> 11
-	x2 := (h.Calibration.ac2 * b6) >> 11
-	x3 := x1 + x2
-	b3 := math.Ceil(float64((((h.Calibration.ac1 * 4 + x3) << mode) + 2) / 4))
-
-	x1 = (h.Calibration.ac3 * b6) >> 13
-	x2 = (h.Calibration.b1 * ((b6 * b6) >> 12)) >> 16
-	x3 = ((x1 + x2) + 2) >> 2
-	b4 := (h.Calibration.ac4 * (x3 + 32768)) >> 15
-	b7 := (h.RawPressure - uint16(b3)) * (50000 >> mode)
-
-	if (b7 < 0x80000000) {
-	    p = math.Ceil((b7 * 2) / b4)
-	} else {
-	    p = math.Ceil((b7 / b4) * 2)
-	}
-
-	x1 = (p >> 8) * (p >> 8)
-	x1 = (x1 * 3038) >> 16
-	x2 = (-7357 * p) >> 16
-
-	p = p + ((x1 + x2 + 3791) >> 4)
-
-	h.Pressure = p
+func (h *BMP180Driver) calculatePressure() float64 {
+	s := h.Temperature - 25.0;
+	x := (h.Polynomials.x2 * math.Pow(s, 2)) + (h.Polynomials.x1 * s) + h.Polynomials.x0
+	y := (h.Polynomials.y2 * math.Pow(s, 2)) + (h.Polynomials.y1 * s) + h.Polynomials.y0
+	z := (float64(h.RawPressure) - x) / y
+	h.Pressure = (h.Polynomials.p2 * math.Pow(z, 2)) + (h.Polynomials.p1 * z) + h.Polynomials.p0
+	return h.Pressure
 }
 
 func (h *BMP180Driver) calculateAltitude() {
