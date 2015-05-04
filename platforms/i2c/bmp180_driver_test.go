@@ -2,6 +2,7 @@ package i2c
 
 import (
 	"testing"
+	//"time"
 
 	"github.com/hybridgroup/gobot"
 )
@@ -30,9 +31,47 @@ func TestNewBMP180Driver(t *testing.T) {
 
 // Methods
 func TestBMP180DriverStart(t *testing.T) {
-	mpu := initTestBMP180Driver()
+	bmp, adaptor := initTestBMP180DriverWithStubbedAdaptor()
 
-	gobot.Assert(t, len(mpu.Start()), 0)
+	adaptor.i2cReadImpl = func() ([]byte, error) {
+		return []byte{0x10, 0x11, 0x12, 0x13,
+			0x14, 0x15, 0x16, 0x17,
+			0x18, 0x19, 0x20, 0x21, 0x22, 0x23,
+			0x24, 0x25, 0x26, 0x27, 0x28, 0x29,
+			0x30, 0x31}, nil
+	}
+	gobot.Assert(t, len(bmp.Start()), 0)
+	gobot.Assert(t, bmp.Calibration.ac1, uint16(4113))
+	gobot.Assert(t, bmp.Calibration.ac2, uint16(4627))
+}
+
+func TestBMP180DriverTempPressure(t *testing.T) {
+	bmp, adaptor := initTestBMP180DriverWithStubbedAdaptor()
+	adaptor.i2cReadImpl = func() ([]byte, error) {
+		return []byte{0x10, 0x11, 0x12, 0x13,
+			0x14, 0x15, 0x16, 0x17,
+			0x18, 0x19, 0x20, 0x21, 0x22, 0x23,
+			0x24, 0x25, 0x26, 0x27, 0x28, 0x29,
+			0x30, 0x31}, nil
+	}
+	gobot.Assert(t, len(bmp.Start()), 0)
+	//<-time.After(10 * time.Millisecond)
+	adaptor.i2cReadImpl = func() ([]byte, error) {
+		return []byte{0x10, 0x10}, nil
+	}
+	bmp.ReadRawTemp()
+	bmp.CalculateTemperature()
+	//<-time.After(10 * time.Millisecond)
+	gobot.Assert(t, bmp.Temperature, float32(116.58878))
+
+	//<-time.After(10 * time.Millisecond)
+	adaptor.i2cReadImpl = func() ([]byte, error) {
+		return []byte{0x20, 0x20, 0x20}, nil
+	}
+	bmp.ReadRawPressure(0)
+	bmp.CalculatePressure()
+	//<-time.After(10 * time.Millisecond)
+	gobot.Assert(t, bmp.Pressure, float32(50.007942))
 }
 
 func TestBMP180DriverHalt(t *testing.T) {

@@ -3,9 +3,10 @@ package i2c
 import (
 	"bytes"
 	"encoding/binary"
-	"time"
 	"math"
+	"time"
 
+	"fmt"
 	"github.com/hybridgroup/gobot"
 )
 
@@ -30,11 +31,11 @@ type BPMCalibrationData struct {
 	ac4 uint16
 	ac5 uint16
 	ac6 uint16
-	b1 uint16
-	b2 uint16
-	mb uint16
-	mc uint16
-	md uint16
+	b1  uint16
+	b2  uint16
+	mb  uint16
+	mc  uint16
+	md  uint16
 }
 
 type BPMPolynomials struct {
@@ -57,16 +58,16 @@ type BPMPolynomials struct {
 }
 
 type BMP180Driver struct {
-	name          string
-	connection    I2c
-	interval      time.Duration
-	Calibration 	BPMCalibrationData
-	Polynomials		BPMPolynomials
-	RawPressure 	uint16
+	name           string
+	connection     I2c
+	interval       time.Duration
+	Calibration    BPMCalibrationData
+	Polynomials    BPMPolynomials
+	RawPressure    uint16
 	RawTemperature uint16
-	Pressure   		float64
-	Temperature   float64
-	Altitude			uint16
+	Pressure       float64
+	Temperature    float64
+	Altitude       uint16
 	gobot.Eventer
 }
 
@@ -75,7 +76,7 @@ func NewBMP180Driver(a I2c, name string, v ...time.Duration) *BMP180Driver {
 	m := &BMP180Driver{
 		name:       name,
 		connection: a,
-		interval:   10 * time.Millisecond,
+		interval:   1000 * time.Millisecond,
 		Eventer:    gobot.NewEventer(),
 	}
 
@@ -97,22 +98,24 @@ func (h *BMP180Driver) Start() (errs []error) {
 		return []error{err}
 	}
 
-	// gobot.Every(h.interval, func() {
-	// 	if err := h.connection.I2cWrite([]byte{MPU6050_RA_ACCEL_XOUT_H}); err != nil {
-	// 		gobot.Publish(h.Event(Error), err)
-	// 		return
-	// 	}
+	go func() {
+		for {
+			<-time.After(h.interval)
+			err, _ := h.ReadRawTemp()
+			if err != nil {
+				return // []error{err}?
+			}
+			h.CalculateTemperature()
 
-	// 	ret, err := h.connection.I2cRead(14)
-	// 	if err != nil {
-	// 		gobot.Publish(h.Event(Error), err)
-	// 		return
-	// 	}
-	// 	buf := bytes.NewBuffer(ret)
-	// 	binary.Read(buf, binary.BigEndian, &h.Accelerometer)
-	// 	binary.Read(buf, binary.BigEndian, &h.Gyroscope)
-	// 	binary.Read(buf, binary.BigEndian, &h.Temperature)
-	// })
+			err, _ = h.ReadRawPressure(0)
+			if err != nil {
+				return // []error{err}?
+			}
+			h.CalculatePressure()
+			// TODO gobot.Publish(h.Event(Temperature), h.Temperature)
+		}
+	}()
+
 	return
 }
 
@@ -131,6 +134,7 @@ func (h *BMP180Driver) initialize() (err error) {
 	if err != nil {
 		return
 	}
+
 	buf := bytes.NewBuffer(ret)
 
 	binary.Read(buf, binary.BigEndian, &h.Calibration.ac1)
@@ -147,8 +151,8 @@ func (h *BMP180Driver) initialize() (err error) {
 	binary.Read(buf, binary.BigEndian, &h.Calibration.mc)
 	binary.Read(buf, binary.BigEndian, &h.Calibration.md)
 
-	h.Polynomials.c3 = 160.0 * math.Pow(2,-15.0) * float64(h.Calibration.ac3)
-	h.Polynomials.c4 = math.Pow(10, -3) * math.Pow(2,-15) * float64(h.Calibration.ac4)
+	h.Polynomials.c3 = 160.0 * math.Pow(2, -15.0) * float64(h.Calibration.ac3)
+	h.Polynomials.c4 = math.Pow(10, -3) * math.Pow(2, -15) * float64(h.Calibration.ac4)
 	h.Polynomials.b1 = math.Pow(160, 2) * math.Pow(2, -30) * float64(h.Calibration.b1)
 	h.Polynomials.c5 = (math.Pow(2, -15) / 160) * float64(h.Calibration.ac5)
 	h.Polynomials.c6 = float64(h.Calibration.ac6)
@@ -161,13 +165,13 @@ func (h *BMP180Driver) initialize() (err error) {
 	h.Polynomials.y1 = h.Polynomials.c4 * h.Polynomials.c3
 	h.Polynomials.y2 = h.Polynomials.c4 * h.Polynomials.b1
 	h.Polynomials.p0 = (3791.0 - 8.0) / 1600.0
-	h.Polynomials.p1 = 1.0 - 7357.0 * math.Pow(2, -20)
+	h.Polynomials.p1 = 1.0 - 7357.0*math.Pow(2, -20)
 	h.Polynomials.p2 = 3038.0 * 100.0 * math.Pow(2, -36)
 
 	return nil
 }
 
-func (h *BMP180Driver) readRawTemp() (err error, temperature uint16) {
+func (h *BMP180Driver) ReadRawTemp() (err error, temperature uint16) {
 	if err := h.connection.I2cWrite([]byte{BMP180_REGISTER_CONTROL, BMP180_REGISTER_READTEMPCMD}); err != nil {
 		gobot.Publish(h.Event(Error), err)
 		return err, 0
@@ -183,18 +187,21 @@ func (h *BMP180Driver) readRawTemp() (err error, temperature uint16) {
 	if err != nil {
 		return err, 0
 	}
+
 	buf := bytes.NewBuffer(ret)
 
 	binary.Read(buf, binary.BigEndian, &h.RawTemperature)
+
+	fmt.Printf("%v\n", h.RawTemperature)
 	return nil, h.RawTemperature
 }
 
-func (h *BMP180Driver) readRawPressure(mode uint8) (err error, pressure uint16) {
+func (h *BMP180Driver) ReadRawPressure(mode uint8) (err error, pressure uint16) {
 	if err := h.connection.I2cWrite([]byte{BMP180_REGISTER_CONTROL, BMP180_REGISTER_READPRESSURECMD}); err != nil {
 		gobot.Publish(h.Event(Error), err)
 		return err, 0
 	}
-	<-time.After(waitTime(mode) * time.Millisecond)
+	<-time.After(waitTime(mode))
 
 	if err := h.connection.I2cWrite([]byte{BMP180_REGISTER_PRESSUREDATA}); err != nil {
 		gobot.Publish(h.Event(Error), err)
@@ -205,23 +212,25 @@ func (h *BMP180Driver) readRawPressure(mode uint8) (err error, pressure uint16) 
 	if err != nil {
 		return err, 0
 	}
-	
-	msb:= ret[0]
-	lsb:= ret[1]
+
+	fmt.Printf("%v\n", ret)
+
+	msb := ret[0]
+	lsb := ret[1]
 	xlsb := ret[2]
 
-  h.RawPressure = uint16(((msb << 16) + (lsb << 8) + xlsb) >> (8-mode))
-  return nil, h.RawPressure
+	h.RawPressure = uint16(((msb << 16) + (lsb << 8) + xlsb) >> (8 - mode))
+	return nil, h.RawPressure
 }
 
-func (h *BMP180Driver) calculateTemperature() float64 {
+func (h *BMP180Driver) CalculateTemperature() float64 {
 	a := h.Polynomials.c5 * (float64(h.RawTemperature) - h.Polynomials.c6)
 	h.Temperature = a + (h.Polynomials.mc / (a + h.Polynomials.md))
 	return h.Temperature
 }
 
-func (h *BMP180Driver) calculatePressure() float64 {
-	s := h.Temperature - 25.0;
+func (h *BMP180Driver) CalculatePressure() float64 {
+	s := h.Temperature - 25.0
 	x := (h.Polynomials.x2 * math.Pow(s, 2)) + (h.Polynomials.x1 * s) + h.Polynomials.x0
 	y := (h.Polynomials.y2 * math.Pow(s, 2)) + (h.Polynomials.y1 * s) + h.Polynomials.y0
 	z := (float64(h.RawPressure) - x) / y
@@ -229,22 +238,21 @@ func (h *BMP180Driver) calculatePressure() float64 {
 	return h.Pressure
 }
 
-func (h *BMP180Driver) calculateAltitude() {
-	
+func (h *BMP180Driver) CalculateAltitude() {
+	// TODO: implement
 }
-
 
 func waitTime(mode uint8) time.Duration {
 	switch mode {
-	  case BPM180_MODE_LOWRES:
-	    return 5
-	  case BPM180_MODE_MEDIUMRES:
-	    return 8
-	  case BPM180_MODE_HIGHRES:
-	    return 14
-	  case BPM180_MODE_UHIGHRES:
-	    return 26
-	  default:
-	    return 8
+	case BPM180_MODE_LOWRES:
+		return 5 * time.Millisecond
+	case BPM180_MODE_MEDIUMRES:
+		return 8 * time.Millisecond
+	case BPM180_MODE_HIGHRES:
+		return 14 * time.Millisecond
+	case BPM180_MODE_UHIGHRES:
+		return 26 * time.Millisecond
+	default:
+		return 8 * time.Millisecond
 	}
 }
