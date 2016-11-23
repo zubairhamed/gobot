@@ -1,0 +1,7 @@
+Manipulating EV3 LCD
+http://www.ev3dev.org/docs/tutorials/using-ev3-lcd/
+
+EV3 buttons
+http://www.ev3dev.org/docs/tutorials/using-ev3-buttons/
+
+/sys/class/lego-sensor
